@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 2.8.11)
+
+project(BIRCH)
+
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --std=c11 -Wall -Wextra -Wshadow -Wpointer-arith -Wcast-qual -Wstrict-prototypes -Wmissing-prototypes -pedantic -pedantic-errors -Wunreachable-code -Wformat=2 -fno-builtin -Werror -g")
+
+add_executable(birch birch.c)
