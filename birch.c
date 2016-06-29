@@ -87,17 +87,19 @@ int birch_lex_next(struct birch_lex *l, char *c) {
   assert(l != NULL);
 
   /* increase buffer size as needed */
-  if (l->i == l->cap - 1) {
-    l->cap = 2 * ((l->cap) ? l->cap : 1);
+  if (l->sz == l->cap) {
+    l->cap = 2 * l->cap + 1;
     l->message = realloc(l->message, l->cap);
     assert(l->message != NULL);
   }
 
-  ret = read(l->sock, &l->message[l->i], l->cap - l->i);
-  assert(ret != -1);
-  if (ret == 0)
-    return -1;
-  l->sz = l->i + (size_t)ret;
+  if (l->i == l->sz) {
+    ret = read(l->sock, &l->message[l->sz], l->cap - l->sz);
+    assert(ret != -1);
+    if (ret == 0)
+      return -1;
+    l->sz += (size_t)ret;
+  }
 
   if (l->i < l->sz) {
     if (c != NULL)
@@ -111,7 +113,7 @@ int birch_lex_next(struct birch_lex *l, char *c) {
 void birch_lex_back(struct birch_lex *l) {
   assert(l != NULL);
 
-  if (l->i > 0)
+  if (l->i > l->l)
     l->i--;
 }
 
@@ -133,8 +135,10 @@ void birch_lex_buf(struct birch_lex *l, char **buf, size_t *sz) {
   assert(buf != NULL);
   assert(sz != NULL);
 
-  *buf = &l->message[l->l];
   *sz = l->i - l->l;
+  *buf = calloc(sizeof(char), *sz);
+  assert(buf != NULL);
+  memcpy(*buf, &l->message[l->l], *sz);
   l->l = l->i; /* reset buffer */
 }
 
@@ -258,7 +262,6 @@ int birch_lex_message_state_params_trailing(struct birch_lex *l, void *v) {
       *func = NULL;
       return 0;
     }
-
   return -1;
 }
 
@@ -530,14 +533,13 @@ int birch_lex_stream_state_start(struct birch_lex *l, void *v) {
   assert(v != NULL);
 
   func = (birch_lex_func **)v;
-  for (;;) {
-    if (birch_lex_next(l, &c) == -1)
-      return -1;
+  while (birch_lex_next(l, &c) != -1) {
     if (c == '\r') {
       *func = birch_lex_stream_state_cr;
       return 0;
     }
   }
+  return -1;
 }
 
 int birch_fetch_message(int sock, struct birch_token_list **list) {
@@ -547,7 +549,6 @@ int birch_fetch_message(int sock, struct birch_token_list **list) {
 
   memset(&l, 0, sizeof(l));
   l.sock = sock;
-  l.cap = 4096;
   l.message = calloc(sizeof(char), l.cap);
   assert(l.message != NULL);
 
@@ -555,15 +556,13 @@ int birch_fetch_message(int sock, struct birch_token_list **list) {
     birch_lex_func *func = birch_lex_stream_state_start;
 
     /* 1st pass: lex stream into messages */
-    while (l.i < l.sz - 1) {
-      assert(func != NULL);
-      if (func(&l, &func) == -1)
-        break;
+    while (func != NULL) {
+      if (func(&l, &func) == -1) {
+        *list = l.list;
+        return 0;
+      }
     }
   }
-
-  *list = l.list;
-  return 0;
 }
 
 int main(int argc __attribute__((unused)),
@@ -602,7 +601,7 @@ int main(int argc __attribute__((unused)),
 
     assert(close(pfd[0]) != -1);
     for (i = 0; i < 4; i++) {
-      assert(write(pfd[1], buf, sizeof(buf)) == sizeof(buf));
+      assert(write(pfd[1], buf, sizeof(buf)-1) == sizeof(buf)-1);
     }
     assert(close(pfd[1]) != -1);
   }
