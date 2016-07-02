@@ -42,6 +42,13 @@ struct birch_lex {
   struct birch_token_list *list;
 };
 
+typedef void(birch_message_handlefunc)(void *o, struct birch_token_list *list);
+
+struct birch_message_handler {
+  void *obj;
+  birch_message_handlefunc *func;
+};
+
 /* NOTE: must be restartable */
 typedef int(birch_lex_func)(struct birch_lex *l,
                             void *func /* birch_lex_func **func */);
@@ -66,7 +73,8 @@ int birch_lex_next(struct birch_lex *l, char *c);
 void birch_lex_back(struct birch_lex *l);
 void birch_lex_emit(struct birch_lex *l, struct birch_token tok);
 void birch_lex_buf(struct birch_lex *l, char **buf, size_t *sz);
-int birch_fetch_message(int sock, struct birch_token_list **list);
+int birch_fetch_message(int sock, struct birch_message_handler *handler);
+int birch_fetch_message_pass(struct birch_lex *l);
 
 bool birch_character_is_letter(char c);
 bool birch_character_is_digit(char c);
@@ -369,6 +377,15 @@ int birch_lex_message_state_command_string(struct birch_lex *l, void *v) {
       /* emit token */
       struct birch_token tok;
 
+      birch_lex_back(l);
+
+      tok.type = BIRCH_TOK_COMMAND;
+      birch_lex_buf(l, &tok.begin, &tok.sz);
+      birch_lex_emit(l, tok);
+
+      birch_lex_next(l, NULL);
+
+      tok.type = BIRCH_TOK_SPACE;
       birch_lex_buf(l, &tok.begin, &tok.sz);
       birch_lex_emit(l, tok);
 
@@ -420,7 +437,15 @@ int birch_lex_message_state_command_code(struct birch_lex *l, void *v) {
         return 0;
       }
 
+      birch_lex_back(l);
+
       tok.type = BIRCH_TOK_COMMAND;
+      birch_lex_buf(l, &tok.begin, &tok.sz);
+      birch_lex_emit(l, tok);
+
+      birch_lex_next(l, NULL);
+
+      tok.type = BIRCH_TOK_SPACE;
       birch_lex_buf(l, &tok.begin, &tok.sz);
       birch_lex_emit(l, tok);
 
@@ -542,26 +567,56 @@ int birch_lex_stream_state_start(struct birch_lex *l, void *v) {
   return -1;
 }
 
-int birch_fetch_message(int sock, struct birch_token_list **list) {
-  struct birch_lex l;
+int birch_fetch_message_pass(struct birch_lex *l) {
+  birch_lex_func *func = birch_lex_message_state_start;
 
-  assert(list != NULL);
+  /* 1st pass: lex stream into messages */
+  while (func != NULL) {
+    if (func(l, &func) == -1) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+int birch_fetch_message(int sock, struct birch_message_handler *handler) {
+  struct birch_lex l;
+  int ret;
+
+  assert(handler != NULL);
 
   memset(&l, 0, sizeof(l));
   l.sock = sock;
   l.message = calloc(sizeof(char), l.cap);
   assert(l.message != NULL);
 
-  for (;;) {
-    birch_lex_func *func = birch_lex_stream_state_start;
+  ret = 0;
+  while (ret == 0) {
+    l.list = NULL;
+    ret = birch_fetch_message_pass(&l);
+    handler->func(handler->obj, l.list);
+  }
+  return 0;
+}
 
-    /* 1st pass: lex stream into messages */
-    while (func != NULL) {
-      if (func(&l, &func) == -1) {
-        *list = l.list;
-        return 0;
-      }
-    }
+static birch_message_handlefunc handler;
+
+static void handler(void *o __attribute__((unused)),
+                    struct birch_token_list *list) {
+  int i;
+
+  if (list == NULL)
+    /* end of list */
+    return;
+
+  /* print tokens */
+  for (i = 0; list != NULL; list = list->next, i++) {
+    char buf[100];
+
+    assert(list->tok.begin != NULL);
+
+    sprintf(buf, "%%d-> %%d: '%%.%zus'\n", list->tok.sz);
+    printf(buf, i, list->tok.type, list->tok.begin);
   }
 }
 
@@ -575,25 +630,13 @@ int main(int argc __attribute__((unused)),
   pid = fork();
   assert(pid != -1);
   if (pid != 0) {
-    int i;
-    struct birch_token_list *list;
+    struct birch_message_handler handle;
 
     assert(close(pfd[1]) != -1);
-    list = NULL;
-    assert(birch_fetch_message(pfd[0], &list) != -1);
+    handle.obj = NULL;
+    handle.func = handler;
+    assert(birch_fetch_message(pfd[0], &handle) != -1);
 
-    if (list == NULL)
-      printf("no tokens lex'd :(\n");
-
-    /* print tokens */
-    for (i = 0; list != NULL; list = list->next, i++) {
-      char buf[100];
-
-      assert(list->tok.begin != NULL);
-
-      sprintf(buf, "%%d-> %%d: '%%.%zus'\n", list->tok.sz);
-      printf(buf, i, list->tok.type, list->tok.begin);
-    }
     exit(0);
   } else {
     int i;
@@ -601,7 +644,7 @@ int main(int argc __attribute__((unused)),
 
     assert(close(pfd[0]) != -1);
     for (i = 0; i < 4; i++) {
-      assert(write(pfd[1], buf, sizeof(buf)-1) == sizeof(buf)-1);
+      assert(write(pfd[1], buf, sizeof(buf) - 1) == sizeof(buf) - 1);
     }
     assert(close(pfd[1]) != -1);
   }
