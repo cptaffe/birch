@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #include <unistd.h>
 #include <wait.h>
 
@@ -430,7 +432,7 @@ int birch_message_format_simple(struct birch_message *m, char **out,
   if (m->nparams > 14)
     return -1;
 
-  *sz = 1; /* colon */
+  *sz = 3; /* colon, \r\n */
   *sz += strlen(birch_msg_map[m->type]);
   for (i = 0; i < m->nparams; i++) {
     *sz += strlen(m->params[i]) + 1; /* space */
@@ -458,10 +460,11 @@ int birch_message_format_simple(struct birch_message *m, char **out,
     /* check for unnacceptable characters */
     for (j = 0; m->params[i][j]; j++)
       if (m->params[i][j] == '\n' || m->params[i][j] == '\r' ||
-          ((contains_space = m->params[i][j] == ' ') && i != (m->nparams - 1)))
+          ((contains_space |= m->params[i][j] == ' ') && i != (m->nparams - 1)))
         return -1;
     /* prefix with space */
     (*out)[len++] = ' ';
+    /* use trailing if the last paramter contains spaces */
     if (i == (m->nparams - 1) && contains_space)
       (*out)[len++] = ':';
     /* write parameter */
@@ -469,6 +472,8 @@ int birch_message_format_simple(struct birch_message *m, char **out,
     memcpy(&(*out)[len], m->params[i], n);
     len += n;
   }
+  memcpy(&(*out)[len], "\r\n", 2);
+  len += 2;
 
   return 0;
 }
@@ -985,9 +990,12 @@ int birch_lex_stream_state_start(struct birch_lex *l, void *v) {
 }
 
 int birch_fetch_message_pass(struct birch_lex *l) {
-  birch_lex_func *func = birch_lex_message_state_start;
+  birch_lex_func *func;
 
-  /* 1st pass: lex stream into messages */
+  assert(l != 0);
+
+  /* lex stream into messages */
+  func = birch_lex_message_state_start;
   while (func != 0) {
     if (func(l, &func) == -1) {
       return -1;
@@ -1068,6 +1076,123 @@ static void handler(void *o __attribute__((unused)),
   assert(birch_message_format(&msg, STDOUT_FILENO) != -1);
 }
 
+enum birch_mode {
+  BIRCH_MODE_AWAY = 1 << 0,
+  BIRCH_MODE_INVISIBLE = 1 << 1,
+  BIRCH_MODE_WALLOPS = 1 << 2,
+  BIRCH_MODE_RESTRICTED = 1 << 3,
+  BIRCH_MODE_OPERATOR = 1 << 4,
+  BIRCH_MODE_LOPERATOR = 1 << 5,
+  BIRCH_MODE_NOTICES = 1 << 6,
+};
+
+int birch_message_pass_random(struct birch_message *msg);
+int birch_message_nick(struct birch_message *msg, char *nick);
+int birch_message_user(struct birch_message *msg, enum birch_mode mode,
+                       char *name);
+
+/* generate random pass */
+int birch_message_pass_random(struct birch_message *msg) {
+  uint64_t buf;
+
+  assert(msg != 0);
+
+  msg->type = BIRCH_MSG_PASS;
+  if (syscall(SYS_getrandom, &buf, sizeof(buf), 0) == -1)
+    return -1;
+  msg->params = calloc(sizeof(char *), 1);
+  if (msg->params == 0)
+    return -1;
+  msg->params[0] = calloc(sizeof(char), sizeof(buf) * 2 + 1);
+  if (msg->params[0] == 0)
+    return -1;
+  msg->nparams++;
+  sprintf(msg->params[0], "%lx", buf);
+
+  return 0;
+}
+
+int birch_message_nick(struct birch_message *msg, char *nick) {
+  assert(msg != 0);
+
+  msg->type = BIRCH_MSG_NICK;
+  msg->params = calloc(sizeof(char *), 1);
+  if (msg->params == 0)
+    return -1;
+  msg->params[0] = calloc(sizeof(char), strlen(nick) + 1);
+  if (msg->params[0] == 0)
+    return -1;
+  msg->nparams++;
+  memcpy(msg->params[0], nick, strlen(nick));
+
+  return 0;
+}
+
+int birch_message_user(struct birch_message *msg, enum birch_mode mode,
+                       char *name) {
+  size_t i;
+
+  assert(msg != 0);
+
+  memset(&msg, 0, sizeof(msg));
+
+  msg->type = BIRCH_MSG_NICK;
+  msg->params = calloc(sizeof(char *), 3);
+  if (msg->params == 0)
+    return -1;
+  /* mode parameter */
+  msg->params[0] = calloc(sizeof(char), 8);
+  if (msg->params[0] == 0)
+    return -1;
+  msg->nparams++;
+  i = 0;
+  if (mode & BIRCH_MODE_AWAY)
+    msg->params[0][i++] = 'a';
+  if (mode & BIRCH_MODE_INVISIBLE)
+    msg->params[0][i++] = 'i';
+  if (mode & BIRCH_MODE_WALLOPS)
+    msg->params[0][i++] = 'w';
+  if (mode & BIRCH_MODE_RESTRICTED)
+    msg->params[0][i++] = 'r';
+  if (mode & BIRCH_MODE_OPERATOR)
+    msg->params[0][i++] = 'o';
+  if (mode & BIRCH_MODE_LOPERATOR)
+    msg->params[0][i++] = 'O';
+  if (mode & BIRCH_MODE_NOTICES)
+    msg->params[0][i++] = 's';
+  /* ignored */
+  msg->params[1] = calloc(sizeof(char), 4);
+  if (msg->params[1] == 0)
+    return -1;
+  msg->nparams++;
+  memcpy(msg->params[1], "xxx", 4);
+  /* real name parameter */
+  msg->params[2] = calloc(sizeof(char), strlen(name) + 1);
+  if (msg->params[2] == 0)
+    return -1;
+  msg->nparams++;
+  memcpy(msg->params[2], name, strlen(name));
+
+  return 0;
+}
+
+static int test_client() {
+  struct birch_message msg;
+
+  /* generate random password */
+  memset(&msg, 0, sizeof(msg));
+  if (birch_message_pass_random(&msg) == -1)
+    return -1;
+  birch_message_format(&msg, 0);
+
+  memset(&msg, 0, sizeof(msg));
+  if (birch_message_nick(&msg, "byteflame") == -1)
+    return -1;
+  birch_message_format(&msg, 0);
+
+  return 0;
+}
+
 int main(int argc __attribute__((unused)),
          char **argv __attribute__((unused))) {
   int pfd[2];
@@ -1084,8 +1209,7 @@ int main(int argc __attribute__((unused)),
     handle.obj = 0;
     handle.func = handler;
     assert(birch_fetch_message(pfd[0], &handle) != -1);
-
-    exit(0);
+    assert(test_client() == 0);
   } else {
     int i;
     char *buf = ":kenny.blah.com MSG bob :some sort of message?\r\n";
@@ -1096,4 +1220,5 @@ int main(int argc __attribute__((unused)),
     }
     assert(close(pfd[1]) != -1);
   }
+  exit(0);
 }
