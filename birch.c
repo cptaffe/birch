@@ -27,7 +27,7 @@ struct birch_token {
     BIRCH_TOK_EOL,
     BIRCH_TOK_SPACE,
     BIRCH_TOK_PREFIX, /* until legit prefix parsing */
-    BIRCH_TOK_max,
+    BIRCH_TOK_max
   } type;
   char *begin;
   size_t sz;
@@ -393,7 +393,7 @@ enum birch_response_type {
 
   /* obsolete */
   BIRCH_RPL_LISTSTART = 321,
-  BIRCH_RPL_TRACERECONNECT = 210,
+  BIRCH_RPL_TRACERECONNECT = 210
 };
 
 struct birch_message {
@@ -419,7 +419,7 @@ int birch_message_format(struct birch_message *m, int sock) {
   return 0;
 }
 
-// returns non-zero on error
+/* returns non-zero on error */
 int birch_message_format_simple(struct birch_message *m, char **out,
                                 size_t *sz) {
   /* message type string, params, last parameter is long-form */
@@ -730,7 +730,7 @@ int birch_lex_message_state_params_middle(struct birch_lex *l, void *v) {
       birch_lex_buf(l, &tok.begin, &tok.sz);
       birch_lex_emit(l, tok);
 
-      l->msg_state.params++; // count params
+      l->msg_state.params++; /* count params */
 
       *func = birch_lex_message_state_params;
       return 0;
@@ -1077,13 +1077,14 @@ static void handler(void *o __attribute__((unused)),
 }
 
 enum birch_mode {
+  BIRCH_MODE_NONE = 0,
   BIRCH_MODE_AWAY = 1 << 0,
   BIRCH_MODE_INVISIBLE = 1 << 1,
   BIRCH_MODE_WALLOPS = 1 << 2,
   BIRCH_MODE_RESTRICTED = 1 << 3,
   BIRCH_MODE_OPERATOR = 1 << 4,
   BIRCH_MODE_LOPERATOR = 1 << 5,
-  BIRCH_MODE_NOTICES = 1 << 6,
+  BIRCH_MODE_NOTICES = 1 << 6
 };
 
 int birch_message_pass_random(struct birch_message *msg);
@@ -1130,36 +1131,25 @@ int birch_message_nick(struct birch_message *msg, char *nick) {
 
 int birch_message_user(struct birch_message *msg, enum birch_mode mode,
                        char *name) {
-  size_t i;
+  int flags;
 
   assert(msg != 0);
 
-  memset(&msg, 0, sizeof(msg));
-
-  msg->type = BIRCH_MSG_NICK;
+  msg->type = BIRCH_MSG_USER;
   msg->params = calloc(sizeof(char *), 3);
   if (msg->params == 0)
     return -1;
-  /* mode parameter */
-  msg->params[0] = calloc(sizeof(char), 8);
+  /* mode parameter (single-digit numeral) */
+  msg->params[0] = calloc(sizeof(char), 2);
   if (msg->params[0] == 0)
     return -1;
   msg->nparams++;
-  i = 0;
-  if (mode & BIRCH_MODE_AWAY)
-    msg->params[0][i++] = 'a';
+  flags = 0;
   if (mode & BIRCH_MODE_INVISIBLE)
-    msg->params[0][i++] = 'i';
+    flags |= 1 << 3;
   if (mode & BIRCH_MODE_WALLOPS)
-    msg->params[0][i++] = 'w';
-  if (mode & BIRCH_MODE_RESTRICTED)
-    msg->params[0][i++] = 'r';
-  if (mode & BIRCH_MODE_OPERATOR)
-    msg->params[0][i++] = 'o';
-  if (mode & BIRCH_MODE_LOPERATOR)
-    msg->params[0][i++] = 'O';
-  if (mode & BIRCH_MODE_NOTICES)
-    msg->params[0][i++] = 's';
+    flags |= 1 << 2;
+  sprintf(msg->params[0], "%d", flags);
   /* ignored */
   msg->params[1] = calloc(sizeof(char), 4);
   if (msg->params[1] == 0)
@@ -1176,19 +1166,24 @@ int birch_message_user(struct birch_message *msg, enum birch_mode mode,
   return 0;
 }
 
-static int test_client() {
+static int test_client(int sock) {
   struct birch_message msg;
 
   /* generate random password */
   memset(&msg, 0, sizeof(msg));
   if (birch_message_pass_random(&msg) == -1)
     return -1;
-  birch_message_format(&msg, 0);
+  birch_message_format(&msg, sock);
 
   memset(&msg, 0, sizeof(msg));
   if (birch_message_nick(&msg, "byteflame") == -1)
     return -1;
-  birch_message_format(&msg, 0);
+  birch_message_format(&msg, sock);
+
+  memset(&msg, 0, sizeof(msg));
+  if (birch_message_user(&msg, BIRCH_MODE_NONE, "byteflame") == -1)
+    return -1;
+  birch_message_format(&msg, sock);
 
   return 0;
 }
@@ -1209,7 +1204,7 @@ int main(int argc __attribute__((unused)),
     handle.obj = 0;
     handle.func = handler;
     assert(birch_fetch_message(pfd[0], &handle) != -1);
-    assert(test_client() == 0);
+    assert(test_client(0) == 0);
   } else {
     int i;
     char *buf = ":kenny.blah.com MSG bob :some sort of message?\r\n";
