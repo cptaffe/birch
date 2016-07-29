@@ -29,7 +29,7 @@ struct birch_token {
     BIRCH_TOK_PREFIX, /* until legit prefix parsing */
     BIRCH_TOK_max
   } type;
-  char *begin;
+  char *buf;
   size_t sz;
 };
 
@@ -87,7 +87,7 @@ int birch_fetch_message_pass(struct birch_lex *l);
 bool birch_character_is_letter(char c);
 bool birch_character_is_digit(char c);
 
-void birch_handle_to_lower(const char *buf, char *out, size_t sz);
+void birch_to_lower(char *out, const char *buf, size_t sz);
 
 /* Message types */
 enum birch_message_type {
@@ -148,8 +148,9 @@ enum birch_message_type {
 };
 
 static char *birch_msg_map[BIRCH_MSG_max];
+__attribute__((constructor)) static void birch_msg_map_fill(void);
 
-__attribute__((constructor)) static void birch_msg_map_fill() {
+void birch_msg_map_fill() {
   memset(birch_msg_map, 0, sizeof(birch_msg_map));
   birch_msg_map[BIRCH_MSG_PASS] = "pass";
   birch_msg_map[BIRCH_MSG_NICK] = "nick";
@@ -405,6 +406,8 @@ struct birch_message {
 int birch_message_format(struct birch_message *m, int sock);
 int birch_message_format_simple(struct birch_message *m, char **out,
                                 size_t *sz);
+int birch_token_list_message(struct birch_token_list *list,
+                             struct birch_message *msg);
 
 int birch_message_format(struct birch_message *m, int sock) {
   char *buf;
@@ -428,6 +431,7 @@ int birch_message_format_simple(struct birch_message *m, char **out,
 
   assert(m != 0);
   assert(out != 0);
+  assert(sz != 0);
 
   if (m->nparams > 14)
     return -1;
@@ -457,6 +461,7 @@ int birch_message_format_simple(struct birch_message *m, char **out,
   for (i = 0; i < m->nparams; i++) {
     size_t j, n;
     bool contains_space = false;
+
     /* check for unnacceptable characters */
     for (j = 0; m->params[i][j]; j++)
       if (m->params[i][j] == '\n' || m->params[i][j] == '\r' ||
@@ -473,7 +478,6 @@ int birch_message_format_simple(struct birch_message *m, char **out,
     len += n;
   }
   memcpy(&(*out)[len], "\r\n", 2);
-  len += 2;
 
   return 0;
 }
@@ -548,12 +552,12 @@ void birch_lex_buf(struct birch_lex *l, char **buf, size_t *sz) {
 }
 
 /* respect IRC's scandanavian case handling */
-void birch_handle_to_lower(const char *buf, char *out, size_t sz) {
-  char map[] = "\x0\x1\x2\x3\x4\x5\x6\x7\x8\x9\xa\xb\xc\xd\xe\xf\x10\x11\x12"
-               "\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x20!\"#$%&"
-               "'()*+,-./"
-               "0123456789:;<=>?@abcdefghijklmnopqrstuvwzyz{|}^_`"
-               "abcdefghijklmnopqrstuvwzyz{|}~\x7f";
+void birch_to_lower(char *out, const char *buf, size_t sz) {
+  char *map = "\x0\x1\x2\x3\x4\x5\x6\x7\x8\x9\xa\xb\xc\xd\xe\xf\x10\x11\x12"
+              "\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x20!\"#$%&"
+              "'()*+,-./"
+              "0123456789:;<=>?@abcdefghijklmnopqrstuvwzyz{|}^_`"
+              "abcdefghijklmnopqrstuvwzyz{|}~\x7f";
   size_t i;
 
   assert(buf != 0);
@@ -582,13 +586,13 @@ int birch_lex_message_state_prefix(struct birch_lex *l, void *v) {
 
       /* emit prefix token */
       tok.type = BIRCH_TOK_PREFIX;
-      birch_lex_buf(l, &tok.begin, &tok.sz);
+      birch_lex_buf(l, &tok.buf, &tok.sz);
       birch_lex_emit(l, tok);
 
       /* emit space token */
       birch_lex_next(l, 0);
       tok.type = BIRCH_TOK_SPACE;
-      birch_lex_buf(l, &tok.begin, &tok.sz);
+      birch_lex_buf(l, &tok.buf, &tok.sz);
       birch_lex_emit(l, tok);
 
       *func = birch_lex_message_state_command;
@@ -613,11 +617,11 @@ int birch_lex_message_state_eol(struct birch_lex *l, void *v) {
 
   if (c != '\r') {
     /* error */
-    char buf[] = "Error, expected CR";
+    char *buf = "Error, expected CR";
     struct birch_token tok;
 
     tok.type = BIRCH_TOK_ERR;
-    tok.begin = buf;
+    tok.buf = buf;
     tok.sz = sizeof(buf);
     birch_lex_emit(l, tok);
 
@@ -633,18 +637,18 @@ int birch_lex_message_state_eol(struct birch_lex *l, void *v) {
     struct birch_token tok;
 
     tok.type = BIRCH_TOK_EOL;
-    birch_lex_buf(l, &tok.begin, &tok.sz);
+    birch_lex_buf(l, &tok.buf, &tok.sz);
     birch_lex_emit(l, tok);
 
     *func = 0;
     return 0;
   } else {
     /* error */
-    char buf[] = "Error, expected LF";
+    char *buf = "Error, expected LF";
     struct birch_token tok;
 
     tok.type = BIRCH_TOK_ERR;
-    tok.begin = buf;
+    tok.buf = buf;
     tok.sz = sizeof(buf);
     birch_lex_emit(l, tok);
 
@@ -669,7 +673,7 @@ int birch_lex_message_state_params_trailing(struct birch_lex *l, void *v) {
 
       tok.type = BIRCH_TOK_PARAMS;
       birch_lex_back(l);
-      birch_lex_buf(l, &tok.begin, &tok.sz);
+      birch_lex_buf(l, &tok.buf, &tok.sz);
       birch_lex_emit(l, tok);
 
       *func = birch_lex_message_state_eol;
@@ -677,10 +681,10 @@ int birch_lex_message_state_params_trailing(struct birch_lex *l, void *v) {
     } else if (c == '\0' || c == '\n') {
       /* error */
       struct birch_token tok;
-      char buf[] = "Error, 0 and newline not permitted in params trailing";
+      char *buf = "Error, 0 and newline not permitted in params trailing";
 
       tok.type = BIRCH_TOK_ERR;
-      tok.begin = buf;
+      tok.buf = buf;
       tok.sz = sizeof(buf);
       birch_lex_emit(l, tok);
 
@@ -706,10 +710,10 @@ int birch_lex_message_state_params_middle(struct birch_lex *l, void *v) {
 
       if (i == 0) {
         /* error */
-        char buf[] = "Error, params middle must be nonempty";
+        char *buf = "Error, params middle must be nonempty";
 
         tok.type = BIRCH_TOK_ERR;
-        tok.begin = buf;
+        tok.buf = buf;
         tok.sz = sizeof(buf);
         birch_lex_emit(l, tok);
 
@@ -721,13 +725,13 @@ int birch_lex_message_state_params_middle(struct birch_lex *l, void *v) {
 
       /* emit token */
       tok.type = BIRCH_TOK_PARAMS;
-      birch_lex_buf(l, &tok.begin, &tok.sz);
+      birch_lex_buf(l, &tok.buf, &tok.sz);
       birch_lex_emit(l, tok);
 
       /* emit token */
       birch_lex_next(l, 0);
       tok.type = BIRCH_TOK_SPACE;
-      birch_lex_buf(l, &tok.begin, &tok.sz);
+      birch_lex_buf(l, &tok.buf, &tok.sz);
       birch_lex_emit(l, tok);
 
       l->msg_state.params++; /* count params */
@@ -736,11 +740,11 @@ int birch_lex_message_state_params_middle(struct birch_lex *l, void *v) {
       return 0;
     } else if (c == '\0' || c == '\r' || c == '\n') {
       /* error */
-      char buf[] = "Error, params middle cannot contain 0, CR or LF";
+      char *buf = "Error, params middle cannot contain 0, CR or LF";
       struct birch_token tok;
 
       tok.type = BIRCH_TOK_ERR;
-      tok.begin = buf;
+      tok.buf = buf;
       tok.sz = sizeof(buf);
       birch_lex_emit(l, tok);
 
@@ -769,7 +773,7 @@ int birch_lex_message_state_params(struct birch_lex *l, void *v) {
     struct birch_token tok;
 
     tok.type = BIRCH_TOK_COLON;
-    birch_lex_buf(l, &tok.begin, &tok.sz);
+    birch_lex_buf(l, &tok.buf, &tok.sz);
     birch_lex_emit(l, tok);
 
     *func = birch_lex_message_state_params_trailing;
@@ -802,13 +806,13 @@ int birch_lex_message_state_command_string(struct birch_lex *l, void *v) {
       birch_lex_back(l);
 
       tok.type = BIRCH_TOK_COMMAND;
-      birch_lex_buf(l, &tok.begin, &tok.sz);
+      birch_lex_buf(l, &tok.buf, &tok.sz);
       birch_lex_emit(l, tok);
 
       birch_lex_next(l, 0);
 
       tok.type = BIRCH_TOK_SPACE;
-      birch_lex_buf(l, &tok.begin, &tok.sz);
+      birch_lex_buf(l, &tok.buf, &tok.sz);
       birch_lex_emit(l, tok);
 
       *func = birch_lex_message_state_params;
@@ -816,10 +820,10 @@ int birch_lex_message_state_command_string(struct birch_lex *l, void *v) {
     } else if (!birch_character_is_letter(c)) {
       /* error */
       struct birch_token tok;
-      char buf[] = "Unexpected non-letter in command";
+      char *buf = "Unexpected non-letter in command";
 
       tok.type = BIRCH_TOK_ERR;
-      tok.begin = buf;
+      tok.buf = buf;
       tok.sz = sizeof(buf);
       birch_lex_emit(l, tok);
 
@@ -848,10 +852,10 @@ int birch_lex_message_state_command_code(struct birch_lex *l, void *v) {
 
       if (i != 2) {
         /* error */
-        char buf[] = "Error, expected 3-digit code, wrong length";
+        char *buf = "Error, expected 3-digit code, wrong length";
 
         tok.type = BIRCH_TOK_ERR;
-        tok.begin = buf;
+        tok.buf = buf;
         tok.sz = sizeof(buf);
         birch_lex_emit(l, tok);
 
@@ -862,24 +866,24 @@ int birch_lex_message_state_command_code(struct birch_lex *l, void *v) {
       birch_lex_back(l);
 
       tok.type = BIRCH_TOK_COMMAND;
-      birch_lex_buf(l, &tok.begin, &tok.sz);
+      birch_lex_buf(l, &tok.buf, &tok.sz);
       birch_lex_emit(l, tok);
 
       birch_lex_next(l, 0);
 
       tok.type = BIRCH_TOK_SPACE;
-      birch_lex_buf(l, &tok.begin, &tok.sz);
+      birch_lex_buf(l, &tok.buf, &tok.sz);
       birch_lex_emit(l, tok);
 
       *func = birch_lex_message_state_params;
       return 0;
     } else if (!birch_character_is_digit(c)) {
       /* error */
-      char buf[] = "Error, non-digit in numeric command";
+      char *buf = "Error, non-digit in numeric command";
       struct birch_token tok;
 
       tok.type = BIRCH_TOK_ERR;
-      tok.begin = buf;
+      tok.buf = buf;
       tok.sz = sizeof(buf);
       birch_lex_emit(l, tok);
 
@@ -906,11 +910,11 @@ int birch_lex_message_state_command(struct birch_lex *l, void *v) {
     *func = birch_lex_message_state_command_string;
   } else {
     /* error */
-    char buf[] = "Unexpected character, expected command.";
+    char *buf = "Unexpected character, expected command.";
     struct birch_token tok;
 
     tok.type = BIRCH_TOK_ERR;
-    tok.begin = buf;
+    tok.buf = buf;
     tok.sz = sizeof(buf);
     birch_lex_emit(l, tok);
 
@@ -934,7 +938,7 @@ int birch_lex_message_state_start(struct birch_lex *l, void *v) {
     struct birch_token tok;
 
     tok.type = BIRCH_TOK_COLON;
-    birch_lex_buf(l, &tok.begin, &tok.sz);
+    birch_lex_buf(l, &tok.buf, &tok.sz);
     birch_lex_emit(l, tok);
 
     *func = birch_lex_message_state_prefix;
@@ -962,7 +966,7 @@ int birch_lex_stream_state_cr(struct birch_lex *l, void *v) {
 
     /* emit token */
     tok.type = BIRCH_TOK_MSG;
-    birch_lex_buf(l, &tok.begin, &tok.sz);
+    birch_lex_buf(l, &tok.buf, &tok.sz);
     birch_lex_emit(l, tok);
   }
 
@@ -1024,39 +1028,43 @@ int birch_fetch_message(int sock, struct birch_message_handler *handler) {
   return 0;
 }
 
-static birch_message_handlefunc handler;
+int birch_token_list_message(struct birch_token_list *list,
+                             struct birch_message *msg) {
+  size_t i;
 
-static void handler(void *o __attribute__((unused)),
-                    struct birch_token_list *list) {
-  int i;
-  struct birch_message msg;
+  assert(list != 0); /* empty list */
+  assert(msg != 0);
 
-  memset(&msg, 0, sizeof(msg));
-
-  if (list == 0)
-    /* end of list */
-    return;
+  msg->type = BIRCH_MSG_max;
 
   /* form message */
   for (i = 0; list != 0; list = list->next, i++) {
     char *buf;
     size_t j;
 
-    assert(list->tok.begin != 0);
+    assert(list->tok.buf != 0);
+    assert(list->tok.type < BIRCH_TOK_max && list->tok.type >= 0);
 
     switch (list->tok.type) {
     case BIRCH_TOK_PARAMS:
       buf = calloc(sizeof(char), list->tok.sz + 1);
-      memcpy(buf, list->tok.begin, list->tok.sz);
-      msg.params = realloc(msg.params, (++msg.nparams) * sizeof(char *));
+      memcpy(buf, list->tok.buf, list->tok.sz);
+      msg->params = realloc(msg->params, (++msg->nparams) * sizeof(char *));
       /* reverse the order of parameters */
-      memmove(&msg.params[1], msg.params, (msg.nparams - 1) * sizeof(char *));
-      msg.params[0] = buf;
+      memmove(&msg->params[1], msg->params,
+              (msg->nparams - 1) * sizeof(char *));
+      msg->params[0] = buf;
       break;
     case BIRCH_TOK_COMMAND:
-      for (j = 0; j < BIRCH_MSG_max; j++)
-        if (strncmp(birch_msg_map[j], list->tok.begin, list->tok.sz) == 0)
-          msg.type = (enum birch_message_type)j;
+      for (j = 0; j < BIRCH_MSG_max; j++) {
+        /*
+        lower case for comparing,
+        NOTE: this mutates tok.buf *forever*
+        */
+        birch_to_lower(list->tok.buf, list->tok.buf, list->tok.sz);
+        if (strncmp(birch_msg_map[j], list->tok.buf, list->tok.sz) == 0)
+          msg->type = (enum birch_message_type)j;
+      }
       break;
     case BIRCH_TOK_COLON:
     case BIRCH_TOK_EOL:
@@ -1073,6 +1081,25 @@ static void handler(void *o __attribute__((unused)),
     }
   }
 
+  /* require command for all messages */
+  if (msg->type == BIRCH_MSG_max)
+    return -1;
+
+  return 0;
+}
+
+static birch_message_handlefunc handler;
+
+static void handler(void *o __attribute__((unused)),
+                    struct birch_token_list *list) {
+  struct birch_message msg;
+
+  if (!list)
+    return; /* empty list */
+
+  memset(&msg, 0, sizeof(msg));
+
+  assert(birch_token_list_message(list, &msg) == 0);
   assert(birch_message_format(&msg, STDOUT_FILENO) != -1);
 }
 
@@ -1095,8 +1122,11 @@ int birch_message_user(struct birch_message *msg, enum birch_mode mode,
 /* generate random pass */
 int birch_message_pass_random(struct birch_message *msg) {
   uint64_t buf;
+  size_t sz;
 
   assert(msg != 0);
+
+  sz = sizeof(buf) * 2 + 1;
 
   msg->type = BIRCH_MSG_PASS;
   if (syscall(SYS_getrandom, &buf, sizeof(buf), 0) == -1)
@@ -1104,17 +1134,19 @@ int birch_message_pass_random(struct birch_message *msg) {
   msg->params = calloc(sizeof(char *), 1);
   if (msg->params == 0)
     return -1;
-  msg->params[0] = calloc(sizeof(char), sizeof(buf) * 2 + 1);
+  msg->params[0] = calloc(sizeof(char), sz);
   if (msg->params[0] == 0)
     return -1;
   msg->nparams++;
-  sprintf(msg->params[0], "%lx", buf);
+  if (sprintf(msg->params[0], "%lx", buf) > (int)(sz - 1))
+    return -1;
 
   return 0;
 }
 
 int birch_message_nick(struct birch_message *msg, char *nick) {
   assert(msg != 0);
+  assert(nick != 0);
 
   msg->type = BIRCH_MSG_NICK;
   msg->params = calloc(sizeof(char *), 1);
@@ -1134,6 +1166,7 @@ int birch_message_user(struct birch_message *msg, enum birch_mode mode,
   int flags;
 
   assert(msg != 0);
+  assert(name != 0);
 
   msg->type = BIRCH_MSG_USER;
   msg->params = calloc(sizeof(char *), 3);
@@ -1149,7 +1182,8 @@ int birch_message_user(struct birch_message *msg, enum birch_mode mode,
     flags |= 1 << 3;
   if (mode & BIRCH_MODE_WALLOPS)
     flags |= 1 << 2;
-  sprintf(msg->params[0], "%d", flags);
+  if (sprintf(msg->params[0], "%d", flags) != 1)
+    return -1;
   /* ignored */
   msg->params[1] = calloc(sizeof(char), 4);
   if (msg->params[1] == 0)
@@ -1200,14 +1234,15 @@ int main(int argc __attribute__((unused)),
   if (pid != 0) {
     struct birch_message_handler handle;
 
-    assert(close(pfd[1]) != -1);
-    handle.obj = 0;
+    memset(&handle, 0, sizeof(handle));
     handle.func = handler;
+
+    assert(close(pfd[1]) != -1);
     assert(birch_fetch_message(pfd[0], &handle) != -1);
     assert(test_client(0) == 0);
   } else {
     int i;
-    char *buf = ":kenny.blah.com MSG bob :some sort of message?\r\n";
+    char *buf = ":kenny.blah.com PRIVMSG bob :some sort of message?\r\n";
 
     assert(close(pfd[0]) != -1);
     for (i = 0; i < 4; i++) {
