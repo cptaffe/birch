@@ -62,7 +62,15 @@ static int handler_init(struct handler *handler);
 static void handler_fini(struct handler *handler);
 
 int handler_init(struct handler *handler) {
-  if (regcomp(&handler->future, "#ualr-acm[ :]*f!$", 0) != 0)
+  char *buf;
+  size_t sz;
+
+  assert(handler->channel);
+
+  sz = strlen(handler->channel) + 128;
+  buf = calloc(sizeof(char), sz);
+  snprintf(buf, sz - 1, "^%s[ :]*f!$", handler->channel);
+  if (regcomp(&handler->future, buf, 0) != 0)
     return -1;
   return 0;
 }
@@ -196,10 +204,10 @@ int main(int argc __attribute__((unused)),
     exit(1);
 
   memset(&handle, 0, sizeof(handle));
-  if (handler_init(&h) == -1)
-    exit(1);
   h.sock = sock;
   h.channel = "#ualr-acm";
+  if (handler_init(&h) == -1)
+    exit(1);
   handle.obj = &h;
   handle.func = handler;
 
