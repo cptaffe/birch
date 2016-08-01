@@ -1,6 +1,7 @@
 /* Copyright 2016 Connor Taffe */
 
 #include <assert.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <regex.h>
 #include <stdbool.h>
@@ -10,13 +11,78 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
 #include "../birch.h"
 
 static birch_message_handlefunc handler;
+
+struct handler {
+  int sock;
+  regex_t future;
+  char *channel;
+};
+
+static int handler_init(struct handler *handler);
+static void handler_fini(struct handler *handler);
+
+static int test_client(int sock);
+
 static int fortune(void);
+int path(char *name, char **out);
+
+int path(char *name, char **out) {
+  size_t i, last;
+  char *path;
+
+  assert(name);
+
+  if ((path = getenv("PATH")) == 0)
+    return -1;
+
+  last = 0;
+  for (i = 0; path[i]; i++) {
+    if (path[i] == ':') {
+      char *buf, fmt[10]; /* three digit string size */
+      size_t sz;
+      struct stat info;
+
+      if (i - last > 999)
+        continue;
+
+      /* create format string */
+      snprintf(fmt, sizeof(fmt), "%%.%lds/%%s", i - last);
+
+      /* create file path */
+      sz = (i - last) + strlen(name) + 2;
+      buf = calloc(sizeof(char), sz);
+
+/* disable errors for format nonliteral */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+      /* format path */
+      snprintf(buf, sz, fmt, &path[last], name);
+#pragma GCC diagnostic pop
+
+      last = i + 1; /* ignore ':' */
+
+      /* stat file */
+      if (stat(buf, &info) == -1)
+        continue;
+
+      /* not a directory, at least one executable bit set */
+      if (!S_ISDIR(info.st_mode) && (info.st_mode & 0111) != 0) {
+        *out = buf;
+        return 0;
+      }
+
+      free(buf);
+    }
+  }
+  return -1;
+}
 
 /* route stdout from `fortune` to the returned pipe out */
 int fortune() {
@@ -30,7 +96,10 @@ int fortune() {
   if (child == -1)
     return -1;
   if (child == 0) {
-    char *argv[] = {"/usr/games/fortune", "-sn", "140", 0};
+    char *argv[] = {0, "-sn", "140", 0};
+
+    if (path("fortune", &argv[0]) == -1)
+      goto error;
 
     if (close(fd[0]) == -1)
       goto error;
@@ -45,21 +114,13 @@ int fortune() {
     goto error;
 
   error:
+    free(argv[0]);
     exit(1);
   }
   if (close(fd[1]) == -1)
     return -1;
   return fd[0];
 }
-
-struct handler {
-  int sock;
-  regex_t future;
-  char *channel;
-};
-
-static int handler_init(struct handler *handler);
-static void handler_fini(struct handler *handler);
 
 int handler_init(struct handler *handler) {
   char *buf;
@@ -126,7 +187,7 @@ void handler(void *o, struct birch_token_list *list) {
           assert(ret != -1);
           if (ret == 0)
             break;
-          i += ret;
+          i += (size_t)ret;
         }
         buf[i] = 0;
 
@@ -156,31 +217,35 @@ void handler(void *o, struct birch_token_list *list) {
   }
 }
 
-static int test_client(int sock);
-
 int test_client(int sock) {
   struct birch_message msg;
+  enum { STAGE_PASS, STAGE_NICK, STAGE_USER, STAGE_JOIN, STAGE_max } i;
 
   /* generate random password */
-  memset(&msg, 0, sizeof(msg));
-  if (birch_message_pass_random(&msg) == -1)
-    return -1;
-  birch_message_format(&msg, sock);
-
-  memset(&msg, 0, sizeof(msg));
-  if (birch_message_nick(&msg, "ualr-acm-bot") == -1)
-    return -1;
-  birch_message_format(&msg, sock);
-
-  memset(&msg, 0, sizeof(msg));
-  if (birch_message_user(&msg, "test__", "UALR ACM IRC Bot") == -1)
-    return -1;
-  birch_message_format(&msg, sock);
-
-  memset(&msg, 0, sizeof(msg));
-  if (birch_message_join(&msg, "#ualr-acm") == -1)
-    return -1;
-  birch_message_format(&msg, sock);
+  for (i = 0; i < STAGE_max; i++) {
+    memset(&msg, 0, sizeof(msg));
+    switch (i) {
+    case STAGE_PASS:
+      if (birch_message_pass_random(&msg) == -1)
+        return -1;
+      break;
+    case STAGE_NICK:
+      if (birch_message_nick(&msg, "ualr-acm-bot") == -1)
+        return -1;
+      break;
+    case STAGE_USER:
+      if (birch_message_user(&msg, "test__", "UALR ACM IRC Bot") == -1)
+        return -1;
+      break;
+    case STAGE_JOIN:
+      if (birch_message_join(&msg, "#ualr-acm") == -1)
+        return -1;
+      break;
+    case STAGE_max:
+      __builtin_unreachable();
+    }
+    birch_message_format(&msg, sock);
+  }
 
   return 0;
 }
@@ -191,30 +256,38 @@ int main(int argc __attribute__((unused)),
   int sock;
   struct sockaddr_in addr;
   struct handler h;
+  int ecode;
+
+  ecode = 1;
+  memset(&addr, 0, sizeof(addr));
+  memset(&handle, 0, sizeof(handle));
+  memset(&h, 0, sizeof(h));
 
   sock = socket(AF_INET, SOCK_STREAM, 0);
   if (sock == -1)
-    exit(1);
+    goto failure;
 
-  memset(&addr, 0, sizeof(addr));
   addr.sin_family = AF_INET, addr.sin_port = htons(6667);
   addr.sin_addr.s_addr = htonl((uint32_t)64 << 24 | (uint32_t)32 << 16 |
                                (uint32_t)24 << 8 | (uint32_t)178);
   if (connect(sock, &addr, sizeof(addr)) == -1)
-    exit(1);
+    goto failure;
 
-  memset(&handle, 0, sizeof(handle));
   h.sock = sock;
   h.channel = "#ualr-acm";
   if (handler_init(&h) == -1)
-    exit(1);
+    goto failure;
   handle.obj = &h;
   handle.func = handler;
 
   if (test_client(sock) != 0)
-    exit(1);
+    goto failure;
   if (birch_fetch_message(sock, &handle) == -1)
-    exit(1);
+    goto failure;
+
+  /* cleanup */
+  ecode = 0;
+failure:
   handler_fini(&h);
-  exit(0);
+  exit(ecode);
 }

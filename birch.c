@@ -178,6 +178,8 @@ int birch_lex_next(struct birch_lex *l, char *c) {
   }
 
   if (l->i == l->sz) {
+    if (l->sock == -1)
+      return -1;
     ret = read(l->sock, &l->message[l->sz], l->cap - l->sz);
     assert(ret != -1);
     if (ret == 0)
@@ -671,13 +673,11 @@ int birch_lex_stream_state_start(struct birch_lex *l, void *v) {
   return -1;
 }
 
-int birch_fetch_message_pass(struct birch_lex *l) {
-  birch_lex_func *func;
-
+int birch_fetch_message_pass(struct birch_lex *l, birch_lex_func *func) {
   assert(l != 0);
+  assert(func != 0);
 
   /* lex stream into messages */
-  func = birch_lex_message_state_start;
   while (func != 0) {
     if (func(l, &func) == -1) {
       return -1;
@@ -688,23 +688,48 @@ int birch_fetch_message_pass(struct birch_lex *l) {
 
 int birch_fetch_message(int sock, struct birch_message_handler *handler) {
   struct birch_lex l;
+  birch_lex_func *func;
   int ret;
 
   assert(handler != 0);
 
   memset(&l, 0, sizeof(l));
   l.sock = sock;
-  l.message = calloc(sizeof(char), l.cap);
-  assert(l.message != 0);
 
   ret = 0;
   while (ret == 0) {
     l.list = 0;
-    ret = birch_fetch_message_pass(&l);
+    func = birch_lex_message_state_start;
+    ret = birch_fetch_message_pass(&l, func);
     handler->func(handler->obj, l.list);
     free(l.list);
   }
   free(l.message);
+  return 0;
+}
+
+int birch_fetch_message_buf(char *buf, size_t sz,
+                            struct birch_message_handler *handler) {
+  struct birch_lex l;
+  birch_lex_func *func;
+  int ret;
+
+  assert(buf != 0);
+  assert(handler != 0);
+
+  memset(&l, 0, sizeof(l));
+  l.sock = -1; /* error on reads from socket */
+  l.message = buf;
+  l.sz = l.cap = sz;
+
+  ret = 0;
+  while (ret == 0) {
+    l.list = 0;
+    func = birch_lex_message_state_start;
+    ret = birch_fetch_message_pass(&l, func);
+    handler->func(handler->obj, l.list);
+    free(l.list);
+  }
   return 0;
 }
 

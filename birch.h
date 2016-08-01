@@ -69,7 +69,9 @@ void birch_lex_back(struct birch_lex *l);
 void birch_lex_emit(struct birch_lex *l, struct birch_token tok);
 void birch_lex_buf(struct birch_lex *l, char **buf, size_t *sz);
 int birch_fetch_message(int sock, struct birch_message_handler *handler);
-int birch_fetch_message_pass(struct birch_lex *l);
+int birch_fetch_message_pass(struct birch_lex *l, birch_lex_func *func);
+int birch_fetch_message_buf(char *buf, size_t sz,
+                            struct birch_message_handler *handler);
 
 bool birch_character_is_letter(char c);
 bool birch_character_is_digit(char c);
