@@ -73,14 +73,21 @@ void birch_msg_map_fill() {
 int birch_message_format(struct birch_message *m, int sock) {
   char *buf;
   size_t sz;
+  int ret;
+
+  buf = 0;
+  ret = -1;
 
   if (birch_message_format_simple(m, &buf, &sz) != 0)
-    return -1;
+    goto error;
 
   if (write(sock, buf, sz) != (ssize_t)sz)
-    return -1;
+    goto error;
 
-  return 0;
+  ret = 0;
+error:
+  free(buf);
+  return ret;
 }
 
 /* returns non-zero on error */
@@ -211,6 +218,9 @@ void birch_lex_buf(struct birch_lex *l, char **buf, size_t *sz) {
   assert(l != 0);
   assert(buf != 0);
   assert(sz != 0);
+
+  if (l->i == l->l)
+    return;
 
   *sz = l->i - l->l;
   *buf = calloc(sizeof(char), *sz);
@@ -692,7 +702,9 @@ int birch_fetch_message(int sock, struct birch_message_handler *handler) {
     l.list = 0;
     ret = birch_fetch_message_pass(&l);
     handler->func(handler->obj, l.list);
+    free(l.list);
   }
+  free(l.message);
   return 0;
 }
 
@@ -863,6 +875,26 @@ int birch_message_pong(struct birch_message *msg, char *from, char *to) {
     memcpy(msg->params[msg->nparams], to, strlen(to));
     msg->nparams++;
   }
+
+  return 0;
+}
+
+/* TODO: support multiple channels and keys */
+int birch_message_join(struct birch_message *msg, char *chan) {
+  assert(chan != 0);
+
+  msg->type = BIRCH_MSG_JOIN;
+  msg->params = calloc(sizeof(char *), 1);
+  if (msg->params == 0)
+    return -1;
+  msg->nparams = 0;
+
+  /* channel parameter */
+  msg->params[msg->nparams] = calloc(sizeof(char), strlen(chan) + 1);
+  if (msg->params[msg->nparams] == 0)
+    return -1;
+  memcpy(msg->params[msg->nparams], chan, strlen(chan));
+  msg->nparams++;
 
   return 0;
 }

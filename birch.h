@@ -361,3 +361,4 @@ int birch_message_pass_random(struct birch_message *msg);
 int birch_message_nick(struct birch_message *msg, char *nick);
 int birch_message_user(struct birch_message *msg, char *username, char *name);
 int birch_message_pong(struct birch_message *msg, char *from, char *to);
+int birch_message_join(struct birch_message *msg, char *chan);
