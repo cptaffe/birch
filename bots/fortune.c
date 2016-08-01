@@ -13,7 +13,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-#include "birch.h"
+#include "../birch.h"
 
 static birch_message_handlefunc handler;
 static int fortune(void);
