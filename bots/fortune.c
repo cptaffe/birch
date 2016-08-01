@@ -1,5 +1,6 @@
 /* Copyright 2016 Connor Taffe */
 
+#include <arpa/inet.h>
 #include <assert.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -31,7 +32,7 @@ static void handler_fini(struct handler *handler);
 static int test_client(int sock);
 
 static int fortune(void);
-int path(char *name, char **out);
+static int path(char *name, char **out);
 
 int path(char *name, char **out) {
   size_t i, last;
@@ -267,9 +268,10 @@ int main(int argc __attribute__((unused)),
   if (sock == -1)
     goto failure;
 
-  addr.sin_family = AF_INET, addr.sin_port = htons(6667);
-  addr.sin_addr.s_addr = htonl((uint32_t)64 << 24 | (uint32_t)32 << 16 |
-                               (uint32_t)24 << 8 | (uint32_t)178);
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(6667);
+  if (inet_pton(AF_INET, "64.32.24.178", &addr.sin_addr) == 0)
+    goto failure;
   if (connect(sock, &addr, sizeof(addr)) == -1)
     goto failure;
 
