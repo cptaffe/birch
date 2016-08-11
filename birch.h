@@ -17,7 +17,7 @@ struct birch_token {
     BIRCH_TOK_max
   } type;
   char *buf;
-  size_t sz;
+  size_t sz, i, line, col;
 };
 
 struct birch_token_list {
@@ -32,9 +32,9 @@ struct birch_msg_state {
 struct birch_lex {
   char *message;
   int sock;
-  size_t sz, cap, l, i;
+  size_t sz, cap, l, i, line, col, lline, lcol;
+  struct birch_token_list *head, *list;
   struct birch_msg_state msg_state;
-  struct birch_token_list *list;
 };
 
 typedef void(birch_message_handlefunc)(void *o, struct birch_token_list *list);
@@ -67,7 +67,7 @@ birch_lex_func birch_lex_message_state_eol;
 int birch_lex_next(struct birch_lex *l, char *c);
 void birch_lex_back(struct birch_lex *l);
 void birch_lex_emit(struct birch_lex *l, struct birch_token tok);
-void birch_lex_buf(struct birch_lex *l, char **buf, size_t *sz);
+void birch_lex_tok(struct birch_lex *l, struct birch_token *tok);
 int birch_fetch_message(int sock, struct birch_message_handler *handler);
 int birch_fetch_message_pass(struct birch_lex *l, birch_lex_func *func);
 int birch_fetch_message_buf(char *buf, size_t sz,

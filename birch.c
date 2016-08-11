@@ -191,6 +191,11 @@ int birch_lex_next(struct birch_lex *l, char *c) {
     if (c != 0)
       *c = l->message[l->i];
     l->i++;
+    if (l->message[l->i] == '\n') {
+      l->line++;
+      l->col = 0;
+    } else
+      l->col++;
     return 0;
   }
   return -1;
@@ -201,6 +206,10 @@ void birch_lex_back(struct birch_lex *l) {
 
   if (l->i > l->l)
     l->i--;
+  if (!l->col)
+    l->line--;
+  else
+    l->col--;
 }
 
 void birch_lex_emit(struct birch_lex *l, struct birch_token tok) {
@@ -211,24 +220,29 @@ void birch_lex_emit(struct birch_lex *l, struct birch_token tok) {
   link = calloc(sizeof(struct birch_token_list), 1);
   assert(link != 0);
   link->tok = tok;
-  link->next = l->list;
+  if (l->list)
+    l->list->next = link;
   l->list = link;
+  if (!l->head)
+    l->head = link;
 }
 
 /* gets & resets buffer */
-void birch_lex_buf(struct birch_lex *l, char **buf, size_t *sz) {
+void birch_lex_tok(struct birch_lex *l, struct birch_token *t) {
   assert(l != 0);
-  assert(buf != 0);
-  assert(sz != 0);
 
   if (l->i == l->l)
     return;
 
-  *sz = l->i - l->l;
-  *buf = calloc(sizeof(char), *sz);
-  assert(buf != 0);
-  memcpy(*buf, &l->message[l->l], *sz);
+  t->sz = l->i - l->l;
+  t->buf = calloc(sizeof(char), t->sz);
+  t->line = l->lline;
+  t->col = l->lcol;
+  assert(t->buf != 0);
+  memcpy(t->buf, &l->message[l->l], t->sz);
   l->l = l->i; /* reset buffer */
+  l->lline = l->line;
+  l->lcol = l->col;
 }
 
 /* respect IRC's scandanavian case handling */
@@ -266,13 +280,13 @@ int birch_lex_message_state_prefix(struct birch_lex *l, void *v) {
 
       /* emit prefix token */
       tok.type = BIRCH_TOK_PREFIX;
-      birch_lex_buf(l, &tok.buf, &tok.sz);
+      birch_lex_tok(l, &tok);
       birch_lex_emit(l, tok);
 
       /* emit space token */
       birch_lex_next(l, 0);
       tok.type = BIRCH_TOK_SPACE;
-      birch_lex_buf(l, &tok.buf, &tok.sz);
+      birch_lex_tok(l, &tok);
       birch_lex_emit(l, tok);
 
       *func = birch_lex_message_state_command;
@@ -317,7 +331,7 @@ int birch_lex_message_state_eol(struct birch_lex *l, void *v) {
     struct birch_token tok;
 
     tok.type = BIRCH_TOK_EOL;
-    birch_lex_buf(l, &tok.buf, &tok.sz);
+    birch_lex_tok(l, &tok);
     birch_lex_emit(l, tok);
 
     *func = 0;
@@ -353,7 +367,7 @@ int birch_lex_message_state_params_trailing(struct birch_lex *l, void *v) {
 
       tok.type = BIRCH_TOK_PARAMS;
       birch_lex_back(l);
-      birch_lex_buf(l, &tok.buf, &tok.sz);
+      birch_lex_tok(l, &tok);
       birch_lex_emit(l, tok);
 
       *func = birch_lex_message_state_eol;
@@ -405,13 +419,13 @@ int birch_lex_message_state_params_middle(struct birch_lex *l, void *v) {
 
       /* emit token */
       tok.type = BIRCH_TOK_PARAMS;
-      birch_lex_buf(l, &tok.buf, &tok.sz);
+      birch_lex_tok(l, &tok);
       birch_lex_emit(l, tok);
 
       /* emit token */
       birch_lex_next(l, 0);
       tok.type = BIRCH_TOK_SPACE;
-      birch_lex_buf(l, &tok.buf, &tok.sz);
+      birch_lex_tok(l, &tok);
       birch_lex_emit(l, tok);
 
       l->msg_state.params++; /* count params */
@@ -453,7 +467,7 @@ int birch_lex_message_state_params(struct birch_lex *l, void *v) {
     struct birch_token tok;
 
     tok.type = BIRCH_TOK_COLON;
-    birch_lex_buf(l, &tok.buf, &tok.sz);
+    birch_lex_tok(l, &tok);
     birch_lex_emit(l, tok);
 
     *func = birch_lex_message_state_params_trailing;
@@ -486,13 +500,13 @@ int birch_lex_message_state_command_string(struct birch_lex *l, void *v) {
       birch_lex_back(l);
 
       tok.type = BIRCH_TOK_COMMAND;
-      birch_lex_buf(l, &tok.buf, &tok.sz);
+      birch_lex_tok(l, &tok);
       birch_lex_emit(l, tok);
 
       birch_lex_next(l, 0);
 
       tok.type = BIRCH_TOK_SPACE;
-      birch_lex_buf(l, &tok.buf, &tok.sz);
+      birch_lex_tok(l, &tok);
       birch_lex_emit(l, tok);
 
       *func = birch_lex_message_state_params;
@@ -546,13 +560,13 @@ int birch_lex_message_state_command_code(struct birch_lex *l, void *v) {
       birch_lex_back(l);
 
       tok.type = BIRCH_TOK_COMMAND;
-      birch_lex_buf(l, &tok.buf, &tok.sz);
+      birch_lex_tok(l, &tok);
       birch_lex_emit(l, tok);
 
       birch_lex_next(l, 0);
 
       tok.type = BIRCH_TOK_SPACE;
-      birch_lex_buf(l, &tok.buf, &tok.sz);
+      birch_lex_tok(l, &tok);
       birch_lex_emit(l, tok);
 
       *func = birch_lex_message_state_params;
@@ -618,7 +632,7 @@ int birch_lex_message_state_start(struct birch_lex *l, void *v) {
     struct birch_token tok;
 
     tok.type = BIRCH_TOK_COLON;
-    birch_lex_buf(l, &tok.buf, &tok.sz);
+    birch_lex_tok(l, &tok);
     birch_lex_emit(l, tok);
 
     *func = birch_lex_message_state_prefix;
@@ -646,7 +660,7 @@ int birch_lex_stream_state_cr(struct birch_lex *l, void *v) {
 
     /* emit token */
     tok.type = BIRCH_TOK_MSG;
-    birch_lex_buf(l, &tok.buf, &tok.sz);
+    birch_lex_tok(l, &tok);
     birch_lex_emit(l, tok);
   }
 
@@ -711,6 +725,7 @@ int birch_fetch_message(int sock, struct birch_message_handler *handler) {
 int birch_fetch_message_buf(char *buf, size_t sz,
                             struct birch_message_handler *handler) {
   struct birch_lex l;
+  struct birch_token_list *list, *next;
   birch_lex_func *func;
   int ret;
 
@@ -728,7 +743,11 @@ int birch_fetch_message_buf(char *buf, size_t sz,
     func = birch_lex_message_state_start;
     ret = birch_fetch_message_pass(&l, func);
     handler->func(handler->obj, l.list);
-    free(l.list);
+    for (list = l.list; list;) {
+      next = list->next;
+      free(list);
+      list = next;
+    }
   }
   return 0;
 }
