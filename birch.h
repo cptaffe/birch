@@ -3,6 +3,16 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+struct birch_error {
+  enum { BIRCH_ERROR_NONE, BIRCH_ERROR_ERRNO, BIRCH_ERROR_STRING } tag;
+  union {
+    int eno; /* errno is a mcro, so we use this instead */
+    const char *str;
+  } v;
+};
+
+const char *birch_error_string(struct birch_error e);
+
 struct birch_token {
   enum {
     BIRCH_TOK_NONE,
@@ -342,9 +352,9 @@ struct birch_message {
   size_t nparams;
 };
 
-int birch_message_format(struct birch_message *m, int sock);
-int birch_message_format_simple(struct birch_message *m, char **out,
-                                size_t *sz);
+struct birch_error birch_message_format(struct birch_message *m, int sock);
+struct birch_error birch_message_format_simple(struct birch_message *m,
+                                               char **out, size_t *sz);
 int birch_token_list_message(struct birch_token_list *list,
                              struct birch_message *msg);
 
@@ -359,8 +369,9 @@ enum birch_mode {
   BIRCH_MODE_NOTICES = 1 << 6
 };
 
-int birch_message_pass_random(struct birch_message *msg);
-int birch_message_nick(struct birch_message *msg, char *nick);
-int birch_message_user(struct birch_message *msg, char *username, char *name);
+struct birch_error birch_message_pass_random(struct birch_message *msg);
+struct birch_error birch_message_nick(struct birch_message *msg, char *nick);
+struct birch_error birch_message_user(struct birch_message *msg, char *username,
+                                      char *name);
 int birch_message_pong(struct birch_message *msg, char *from, char *to);
 int birch_message_join(struct birch_message *msg, char *chan);

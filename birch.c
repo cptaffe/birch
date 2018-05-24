@@ -4,17 +4,17 @@
 
 #include <assert.h>
 #include <err.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
-#include <unistd.h>
-#include <wait.h>
 
 #include "birch.h"
 
@@ -70,29 +70,70 @@ void birch_msg_map_fill() {
   birch_msg_map[BIRCH_MSG_ISON] = "ison";
 }
 
-int birch_message_format(struct birch_message *m, int sock) {
-  char *buf;
-  size_t sz;
-  int ret;
+static struct birch_error birch_make_error_string(const char *str);
+static struct birch_error birch_make_error_errno(void);
+static struct birch_error birch_make_error_ok(void);
 
-  buf = 0;
-  ret = -1;
-
-  if (birch_message_format_simple(m, &buf, &sz) != 0)
-    goto error;
-
-  if (write(sock, buf, sz) != (ssize_t)sz)
-    goto error;
-
-  ret = 0;
-error:
-  free(buf);
-  return ret;
+const char *birch_error_string(struct birch_error e) {
+  switch (e.tag) {
+  case BIRCH_ERROR_NONE:
+    return "No error";
+  case BIRCH_ERROR_ERRNO:
+    return strerror(e.v.eno);
+  case BIRCH_ERROR_STRING:
+    return e.v.str;
+  }
 }
 
-/* returns non-zero on error */
-int birch_message_format_simple(struct birch_message *m, char **out,
-                                size_t *sz) {
+struct birch_error birch_make_error_string(const char *str) {
+  struct birch_error e;
+  assert(str);
+
+  e.tag = BIRCH_ERROR_STRING;
+  e.v.str = str;
+
+  return e;
+}
+
+struct birch_error birch_make_error_errno(void) {
+  struct birch_error e;
+
+  e.tag = BIRCH_ERROR_ERRNO;
+  e.v.eno = errno;
+
+  return e;
+}
+
+struct birch_error birch_make_error_ok(void) {
+  struct birch_error e;
+
+  memset(&e, 0, sizeof(e));
+
+  return e;
+}
+
+struct birch_error birch_message_format(struct birch_message *m, int sock) {
+  struct birch_error err;
+  char *buf;
+  size_t sz;
+
+  memset(&err, 0, sizeof(err));
+  buf = 0;
+
+  if ((err = birch_message_format_simple(m, &buf, &sz)).tag)
+    goto error;
+
+  if (write(sock, buf, sz) != (ssize_t)sz) {
+    err = birch_make_error_errno();
+    goto error;
+  }
+error:
+  free(buf);
+  return err;
+}
+
+struct birch_error birch_message_format_simple(struct birch_message *m,
+                                               char **out, size_t *sz) {
   /* message type string, params, last parameter is long-form */
   char *cmd;
   size_t i, len;
@@ -104,7 +145,7 @@ int birch_message_format_simple(struct birch_message *m, char **out,
 
   ncolon = 0;
   if (m->nparams > 14)
-    return -1;
+    return birch_make_error_string("cannot have more than 14 params");
 
   *sz = 3; /* colon, \r\n, sans trailing space */
   *sz += strlen(birch_msg_map[m->type]);
@@ -114,7 +155,7 @@ int birch_message_format_simple(struct birch_message *m, char **out,
 
   *out = calloc(sizeof(char), *sz);
   if (*out == 0)
-    return -1;
+    return birch_make_error_errno();
   len = 0; /* use as index of msg */
 
   /* write prefix? */
@@ -136,7 +177,8 @@ int birch_message_format_simple(struct birch_message *m, char **out,
     for (j = 0; m->params[i][j]; j++)
       if (m->params[i][j] == '\n' || m->params[i][j] == '\r' ||
           ((contains_space |= m->params[i][j] == ' ') && i != (m->nparams - 1)))
-        return -1;
+        return birch_make_error_string("unacceptable character in params");
+
     /* prefix with space */
     (*out)[len++] = ' ';
     /* use trailing if the last paramter contains spaces */
@@ -154,7 +196,7 @@ int birch_message_format_simple(struct birch_message *m, char **out,
   if (ncolon == 0)
     *sz = *sz - 1;
 
-  return 0;
+  return birch_make_error_ok();
 }
 
 bool birch_character_is_letter(char c) {
@@ -166,6 +208,8 @@ bool birch_character_is_digit(char c) { return c >= '1' && c <= '9'; }
 /* places the next byte in c, returns -1 if no more characters
    are lexable */
 int birch_lex_next(struct birch_lex *l, char *c) {
+  char fmt[10]; /* SSIZE_MAX is 32,767 (max width 5) + 5 other characters */
+  size_t z;
   ssize_t ret;
 
   assert(l != 0);
@@ -181,9 +225,17 @@ int birch_lex_next(struct birch_lex *l, char *c) {
     if (l->sock == -1)
       return -1;
     ret = read(l->sock, &l->message[l->sz], l->cap - l->sz);
-    assert(ret != -1);
-    if (ret == 0)
+    if (ret == -1)
+      err(1, "birch_lex_next: read() failed");
+    if (!ret)
       return -1;
+    /* diagnotics: print read text */
+    snprintf(fmt, sizeof(fmt), "%%.%lds\n", ret);
+    /* disable errors for format nonliteral */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+    printf(fmt, &l->message[l->sz]);
+#pragma GCC diagnostic pop
     l->sz += (size_t)ret;
   }
 
@@ -257,9 +309,8 @@ void birch_to_lower(char *out, const char *buf, size_t sz) {
   assert(buf != 0);
   assert(out != 0);
 
-  for (i = 0; i < sz; i++) {
+  for (i = 0; i < sz; i++)
     out[i] = map[buf[i] & 0x7f];
-  }
 }
 
 int birch_lex_message_state_prefix(struct birch_lex *l, void *v) {
@@ -270,6 +321,8 @@ int birch_lex_message_state_prefix(struct birch_lex *l, void *v) {
   assert(v != 0);
 
   func = (birch_lex_func **)v;
+
+  printf("%s\n", __func__);
 
   /* lex up to a space */
   while (birch_lex_next(l, &c) != -1) {
@@ -305,6 +358,8 @@ int birch_lex_message_state_eol(struct birch_lex *l, void *v) {
   assert(v != 0);
 
   func = (birch_lex_func **)v;
+
+  printf("%s\n", __func__);
 
   if (birch_lex_next(l, &c) == -1)
     return -1;
@@ -359,6 +414,8 @@ int birch_lex_message_state_params_trailing(struct birch_lex *l, void *v) {
   assert(v != 0);
 
   func = (birch_lex_func **)v;
+
+  printf("%s\n", __func__);
 
   while (birch_lex_next(l, &c) != -1)
     if (c == '\r') {
@@ -596,6 +653,9 @@ int birch_lex_message_state_command(struct birch_lex *l, void *v) {
   assert(v != 0);
 
   func = (birch_lex_func **)v;
+
+  printf("%s\n", __func__);
+
   if (birch_lex_next(l, &c) == -1)
     return -1;
   if (birch_character_is_digit(c)) {
@@ -625,6 +685,9 @@ int birch_lex_message_state_start(struct birch_lex *l, void *v) {
   assert(v != 0);
 
   func = (birch_lex_func **)v;
+
+  printf("%s\n", __func__);
+
   if (birch_lex_next(l, &c) == -1)
     return -1;
   if (c == ':') {
@@ -653,6 +716,7 @@ int birch_lex_stream_state_cr(struct birch_lex *l, void *v) {
   assert(v != 0);
 
   func = (birch_lex_func **)v;
+
   if (birch_lex_next(l, &c) == -1)
     return -1;
   if (c == '\n') {
@@ -690,6 +754,8 @@ int birch_lex_stream_state_start(struct birch_lex *l, void *v) {
 int birch_fetch_message_pass(struct birch_lex *l, birch_lex_func *func) {
   assert(l != 0);
   assert(func != 0);
+
+  printf("%s\n", __func__);
 
   /* lex stream into messages */
   while (func != 0) {
@@ -772,8 +838,12 @@ int birch_token_list_message(struct birch_token_list *list,
     switch (list->tok.type) {
     case BIRCH_TOK_PARAMS:
       buf = calloc(sizeof(char), list->tok.sz + 1);
+      if (!buf)
+        err(1, "birch_token_list_message: calloc() failed");
       memcpy(buf, list->tok.buf, list->tok.sz);
       msg->params = realloc(msg->params, (++msg->nparams) * sizeof(char *));
+      if (!msg->params)
+        err(1, "birch_token_list_message: realloc() failed");
       /* reverse the order of parameters */
       memmove(&msg->params[1], msg->params,
               (msg->nparams - 1) * sizeof(char *));
@@ -814,48 +884,49 @@ int birch_token_list_message(struct birch_token_list *list,
 }
 
 /* generate random pass */
-int birch_message_pass_random(struct birch_message *msg) {
+struct birch_error birch_message_pass_random(struct birch_message *msg) {
   uint64_t buf;
   size_t sz;
 
   assert(msg != 0);
 
-  sz = sizeof(buf) * 2 + 1;
+  sz = sizeof(buf) * 3 + 1;
 
   msg->type = BIRCH_MSG_PASS;
-  if (syscall(SYS_getrandom, &buf, sizeof(buf), 0) == -1)
-    return -1;
+  arc4random_buf(&buf, sizeof(buf));
   msg->params = calloc(sizeof(char *), 1);
   if (msg->params == 0)
-    return -1;
+    return birch_make_error_errno();
   msg->params[0] = calloc(sizeof(char), sz);
   if (msg->params[0] == 0)
-    return -1;
+    return birch_make_error_errno();
   msg->nparams++;
-  if (sprintf(msg->params[0], "%lx", buf) > (int)(sz - 1))
-    return -1;
+  if (sprintf(msg->params[0], "%" PRIu64, buf) > (int)(sz - 1)) {
+    return birch_make_error_string("sprintf: string too large");
+  }
 
-  return 0;
+  return birch_make_error_ok();
 }
 
-int birch_message_nick(struct birch_message *msg, char *nick) {
+struct birch_error birch_message_nick(struct birch_message *msg, char *nick) {
   assert(msg != 0);
   assert(nick != 0);
 
   msg->type = BIRCH_MSG_NICK;
   msg->params = calloc(sizeof(char *), 1);
   if (msg->params == 0)
-    return -1;
+    return birch_make_error_errno();
   msg->params[0] = calloc(sizeof(char), strlen(nick) + 1);
   if (msg->params[0] == 0)
-    return -1;
+    return birch_make_error_errno();
   msg->nparams++;
   memcpy(msg->params[0], nick, strlen(nick));
 
-  return 0;
+  return birch_make_error_ok();
 }
 
-int birch_message_user(struct birch_message *msg, char *username, char *name) {
+struct birch_error birch_message_user(struct birch_message *msg, char *username,
+                                      char *name) {
   size_t i;
 
   assert(msg != 0);
@@ -865,14 +936,14 @@ int birch_message_user(struct birch_message *msg, char *username, char *name) {
   msg->type = BIRCH_MSG_USER;
   msg->params = calloc(sizeof(char *), 4);
   if (msg->params == 0)
-    return -1;
+    return birch_make_error_errno();
 
   msg->nparams = 0;
 
   /* username */
   msg->params[msg->nparams] = calloc(sizeof(char), strlen(username) + 1);
   if (msg->params[msg->nparams] == 0)
-    return -1;
+    return birch_make_error_errno();
   memcpy(msg->params[msg->nparams], username, strlen(username));
   msg->nparams++;
 
@@ -880,7 +951,7 @@ int birch_message_user(struct birch_message *msg, char *username, char *name) {
   for (i = 0; i < 2; i++) {
     msg->params[msg->nparams] = calloc(sizeof(char), strlen(username));
     if (msg->params[msg->nparams] == 0)
-      return -1;
+      return birch_make_error_errno();
     memcpy(msg->params[msg->nparams], "*", 1);
     msg->nparams++;
   }
@@ -888,11 +959,11 @@ int birch_message_user(struct birch_message *msg, char *username, char *name) {
   /* real name parameter */
   msg->params[msg->nparams] = calloc(sizeof(char), strlen(name) + 1);
   if (msg->params[msg->nparams] == 0)
-    return -1;
+    return birch_make_error_errno();
   memcpy(msg->params[msg->nparams], name, strlen(name));
   msg->nparams++;
 
-  return 0;
+  return birch_make_error_ok();
 }
 
 int birch_message_pong(struct birch_message *msg, char *from, char *to) {
